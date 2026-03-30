@@ -12,6 +12,7 @@ TOKYO = timezone(timedelta(hours=9))
 TZID = "Asia/Tokyo"
 TITLE_FILTERS = ("予選", "決勝", "Q1", "Q2")
 PRODID = "-//r4ai//superformula-to-ics//JP"
+SUPPORTED_YEARS = {2025, 2026}
 
 
 def fetch(url: str) -> str:
@@ -160,7 +161,16 @@ def build_ics(events: list[dict[str, str | datetime]], years: list[int]) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate an ICS file from SUPER FORMULA race schedules.")
     parser.add_argument("years", type=int, nargs="+", help="Season years to generate, for example 2025 2026")
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    unsupported_years = sorted(set(args.years) - SUPPORTED_YEARS)
+    if unsupported_years:
+        parser.error(
+            f"unsupported year(s): {', '.join(map(str, unsupported_years))}. "
+            "Supported years are 2025 and 2026."
+        )
+
+    return args
 
 
 def main() -> int:

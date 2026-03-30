@@ -28,7 +28,9 @@ https://raw.githubusercontent.com/r4ai/super_formula_ical/main/superformula.ics
 
 URL で登録するとスケジュールの更新が自動的に反映されます。
 
-## ローカルでの実行（開発者向け）
+## 開発者向け
+
+### ICS ファイルの生成
 
 依存関係のインストール:
 

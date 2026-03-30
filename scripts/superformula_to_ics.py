@@ -11,6 +11,7 @@ BASE_URL = "https://superformula.net/sf3"
 TOKYO = timezone(timedelta(hours=9))
 TZID = "Asia/Tokyo"
 TITLE_FILTERS = ("予選", "決勝", "Q1", "Q2")
+PRODID = "-//r4ai//superformula-to-ics//JP"
 
 
 def fetch(url: str) -> str:
@@ -127,11 +128,18 @@ def collect_events(year: int) -> list[dict[str, str | datetime]]:
     return sorted(events, key=lambda event: (event["start"], event["summary"]))
 
 
-def build_ics(events: list[dict[str, str | datetime]], year: int) -> str:
+def collect_events_for_years(years: list[int]) -> list[dict[str, str | datetime]]:
+    events: list[dict[str, str | datetime]] = []
+    for year in years:
+        events.extend(collect_events(year))
+    return sorted(events, key=lambda event: (event["start"], event["summary"]))
+
+
+def build_ics(events: list[dict[str, str | datetime]], years: list[int]) -> str:
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        f"PRODID:-//r4ai//superformula-to-ics//{year}//JP",
+        f"PRODID:{PRODID}",
     ]
     for event in events:
         lines.extend(
@@ -151,13 +159,14 @@ def build_ics(events: list[dict[str, str | datetime]], year: int) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate an ICS file from SUPER FORMULA race schedules.")
-    parser.add_argument("year", type=int, help="Season year to generate, for example 2026")
+    parser.add_argument("years", type=int, nargs="+", help="Season years to generate, for example 2025 2026")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    sys.stdout.write(build_ics(collect_events(args.year), args.year))
+    years = sorted(set(args.years))
+    sys.stdout.write(build_ics(collect_events_for_years(years), years))
     return 0
 
 

@@ -17,3 +17,5 @@ Return only minified JSON with exactly these keys:
 - issue_body (string)
 
 When approved is false, issue_title and issue_body must clearly explain why the automatic update should be investigated by a human.
+
+Review this diff:

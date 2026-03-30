@@ -72,7 +72,11 @@ jobs:
           COPILOT_GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
           git diff -- superformula.ics > superformula.diff
-          copilot -p "$(cat .github/prompts/review-superformula-ics.txt)" --model=auto --allow-all --no-ask-user --silent > copilot-review.json
+          {
+            cat .github/prompts/review-superformula-ics.txt
+            printf '\n'
+            cat superformula.diff
+          } | copilot --model=auto --allow-all --no-ask-user --silent > copilot-review.json
           python3 .github/scripts/parse_copilot_review.py
 
       - name: Create issue for rejected update

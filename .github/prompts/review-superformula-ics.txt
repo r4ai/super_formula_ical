@@ -1,0 +1,19 @@
+Review the pending git changes in this repository, focusing on superformula.ics.
+
+Determine whether the updated ICS content is a plausible and safe result of refreshing the SUPER FORMULA race schedule.
+
+Approve only if:
+- the diff looks like legitimate schedule updates
+- the ICS structure still appears valid
+- there are no suspicious, malformed, or low-confidence changes
+
+Reject if anything looks broken, malformed, suspicious, or uncertain.
+
+Return only minified JSON with exactly these keys:
+- approved (boolean)
+- summary (string)
+- reason (string)
+- issue_title (string)
+- issue_body (string)
+
+When approved is false, issue_title and issue_body must clearly explain why the automatic update should be investigated by a human.

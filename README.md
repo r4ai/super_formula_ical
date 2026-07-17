@@ -43,3 +43,12 @@ ICS ファイルの生成:
 ```bash
 uv run python scripts/superformula_to_ics.py 2025 2026 > superformula.ics
 ```
+
+テスト:
+
+```bash
+uv run python -m unittest discover -s tests -v
+```
+
+毎週の自動更新では、生成差分を Copilot CLI でレビューします。レビュー応答が不正な場合は
+1 回再試行し、同じ種類の確認事項が継続している場合は既存の open Issue に追記します。

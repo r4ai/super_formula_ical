@@ -7,14 +7,21 @@ Decide whether to APPROVE or REJECT this automatic schedule update.
 - ICS structure is intact: VCALENDAR wrapper present, every VEVENT has BEGIN:VEVENT / END:VEVENT / DTSTART / DTEND / SUMMARY
 - Dates fall within a realistic SUPER FORMULA season window (roughly March–November of a given calendar year)
 - No unexplained mass deletion of events
+- Standard ICS properties and official superformula.net source URLs in DESCRIPTION are expected schedule data
 
 ## Rejection criteria (ANY one triggers rejection)
 - Malformed ICS: missing END:VCALENDAR, unbalanced VEVENT blocks, truncated lines
 - Implausible dates (e.g. year 1970, year 9999, impossible calendar dates)
-- Non-schedule content added: URLs, scripts, unexpected property names
+- Non-schedule content added: scripts, unrelated URLs, or unexpected property names
 - Binary noise or encoding corruption visible in the diff
 - Large-scale event removal with no corresponding additions
 - Any change that cannot be explained by a routine schedule refresh
+
+## SUPER FORMULA scheduling context
+- A postponed or replacement race can be held during another round's weekend, so round numbers do not have to be sequential within a date block
+- Page titles and DESCRIPTION values can list multiple non-consecutive rounds, such as `Rd.3-6-7`; an event for any listed round is consistent with that source
+- Do not reject an event solely because its round number differs from adjacent events when the same round appears in the event's DESCRIPTION or source page title
+- Judge the supplied source information as authoritative unless the diff contains an internal contradiction that the source information does not explain
 
 ## Output rules
 Your ENTIRE response must be one minified JSON object.

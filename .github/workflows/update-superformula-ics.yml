@@ -6,7 +6,8 @@ on:
     - cron: "0 3 * * 4"
 
 permissions:
-  write-all
+  contents: write
+  issues: write
 
 jobs:
   update-ics:
@@ -72,11 +73,22 @@ jobs:
           COPILOT_GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
           git diff -- superformula.ics > superformula.diff
-          {
-            cat .github/prompts/review-superformula-ics.txt
-            printf '\n'
-            cat superformula.diff
-          } | copilot --model=auto --allow-all --no-ask-user --silent > copilot-review.json
+
+          run_review() {
+            {
+              cat .github/prompts/review-superformula-ics.txt
+              printf '\n'
+              cat superformula.diff
+            } | copilot --model=auto --allow-all --no-ask-user --silent > copilot-review.json
+          }
+
+          run_review || true
+          if python3 .github/scripts/parse_copilot_review.py; then
+            exit 0
+          fi
+
+          echo "::warning::Copilot returned an invalid review; retrying once."
+          run_review || true
           python3 .github/scripts/parse_copilot_review.py
 
       - name: Create issue for rejected update
@@ -85,7 +97,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 .github/scripts/create_rejection_issue_files.py
-          gh issue create --title "$(cat issue-title.txt)" --body-file issue-body.md
+          issue_title="$(cat issue-title.txt)"
+          existing_issue="$(
+            gh issue list --state open --limit 100 --json number,title |
+              jq -r --arg title "$issue_title" \
+                'map(select(.title == $title)) | first | .number // empty'
+          )"
+
+          if [ -n "$existing_issue" ]; then
+            gh issue comment "$existing_issue" --body-file issue-body.md
+          else
+            gh issue create --title "$issue_title" --body-file issue-body.md
+          fi
 
       - name: Fail workflow for rejected update
         if: steps.diff.outputs.changed == 'true' && (steps.copilot_review.outcome != 'success' || steps.copilot_review.outputs.approved != 'true')

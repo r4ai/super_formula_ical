@@ -15,25 +15,35 @@ FALLBACK_PAYLOAD = {
 }
 
 
+def load_payload() -> dict[str, str]:
+    if not REVIEW_FILE.exists():
+        return FALLBACK_PAYLOAD
+
+    payload = json.loads(REVIEW_FILE.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or any(
+        not isinstance(payload.get(key), str) or not payload[key].strip()
+        for key in FALLBACK_PAYLOAD
+    ):
+        raise ValueError("review payload must contain non-empty issue details")
+    return {key: payload[key] for key in FALLBACK_PAYLOAD}
+
+
 def main() -> int:
-    if REVIEW_FILE.exists():
-        payload = json.loads(REVIEW_FILE.read_text(encoding="utf-8"))
-    else:
-        payload = FALLBACK_PAYLOAD
+    payload = load_payload()
 
     body = "\n\n".join(
         [
-            payload.get("issue_body", "The automatic ICS update was blocked."),
+            payload["issue_body"],
             f"Workflow run: https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
             "Copilot review summary:",
-            payload.get("summary", ""),
+            payload["summary"],
             "Copilot review reason:",
-            payload.get("reason", ""),
+            payload["reason"],
         ]
     ).strip()
 
     TITLE_FILE.write_text(
-        payload.get("issue_title", "Automatic SUPER FORMULA ICS update needs review"),
+        payload["issue_title"],
         encoding="utf-8",
     )
     BODY_FILE.write_text(body + "\n", encoding="utf-8")

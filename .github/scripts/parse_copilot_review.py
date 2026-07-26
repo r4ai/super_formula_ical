@@ -14,16 +14,23 @@ FALLBACK_PAYLOAD = {
     "issue_body": "Copilot CLI did not return valid JSON, so the automatic ICS update was blocked.",
 }
 REQUIRED_STRING_KEYS = ("summary", "reason", "issue_title", "issue_body")
+ISSUE_KEYS = ("issue_title", "issue_body")
 
 
 def validate_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("review payload must be a JSON object")
-    if type(payload.get("approved")) is not bool:
+    approved = payload.get("approved")
+    if type(approved) is not bool:
         raise ValueError("'approved' must be a boolean")
     for key in REQUIRED_STRING_KEYS:
         if not isinstance(payload.get(key), str):
             raise ValueError(f"'{key}' must be a string")
+    issue_fields_expected = not approved
+    if any(bool(payload[key].strip()) != issue_fields_expected for key in ISSUE_KEYS):
+        raise ValueError(
+            "'issue_title' and 'issue_body' must be non-empty exactly when rejected"
+        )
     return payload
 
 
@@ -60,7 +67,7 @@ def main() -> int:
 
     REVIEW_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-    approved = "true" if payload.get("approved") else "false"
+    approved = "true" if payload["approved"] else "false"
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
         fh.write(f"approved={approved}\n")
 

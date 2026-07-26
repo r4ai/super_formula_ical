@@ -56,6 +56,30 @@ class ExtractPayloadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_copilot_review.extract_payload(json.dumps(payload))
 
+    def test_rejects_issue_fields_inconsistent_with_verdict(self) -> None:
+        cases = [
+            {
+                **VALID_PAYLOAD,
+                "issue_title": "Unexpected issue",
+                "issue_body": "Approved reviews must not create issues.",
+            },
+            {
+                **VALID_PAYLOAD,
+                "approved": False,
+            },
+            {
+                **VALID_PAYLOAD,
+                "approved": False,
+                "issue_title": " ",
+                "issue_body": "A body without a title is invalid.",
+            },
+        ]
+
+        for payload in cases:
+            with self.subTest(approved=payload["approved"]):
+                with self.assertRaises(ValueError):
+                    parse_copilot_review.extract_payload(json.dumps(payload))
+
 
 class MainTests(unittest.TestCase):
     def test_invalid_output_writes_fallback_and_requests_retry(self) -> None:

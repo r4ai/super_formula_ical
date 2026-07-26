@@ -3,8 +3,9 @@ import argparse
 import hashlib
 import re
 import sys
-from datetime import datetime, timedelta, timezone
 import urllib.request
+from datetime import datetime, timedelta, timezone
+from typing import TypedDict
 
 
 BASE_URL = "https://superformula.net/sf3"
@@ -15,9 +16,21 @@ PRODID = "-//r4ai//superformula-to-ics//JP"
 SUPPORTED_YEARS = {2025, 2026}
 
 
+type ScheduleRow = tuple[str, str, int, int]
+type TimeRange = tuple[datetime, datetime]
+
+
+class Event(TypedDict):
+    summary: str
+    description: str
+    start: datetime
+    end: datetime
+    uid: str
+
+
 def fetch(url: str) -> str:
     with urllib.request.urlopen(url) as response:
-        return response.read().decode("utf-8", errors="ignore")
+        return response.read().decode("utf-8")
 
 
 def extract_race_links(html: str) -> list[str]:
@@ -25,23 +38,21 @@ def extract_race_links(html: str) -> list[str]:
 
 
 def extract_schedule_section(html: str) -> str | None:
-    patterns = (
-        r'<span class="ank" id="schedule"></span>(.*?)<span class="ank" id="',
-        r'<span class=\"ank\" id=\"schedule\"></span>(.*?)<span class=\\"ank\\" id=\\"',
+    match = re.search(
+        r'<span class="ank" id="schedule"></span>'
+        r'(.*?)<span class=\\?"ank\\?" id=\\?"',
+        html,
+        re.S,
     )
-    for pattern in patterns:
-        match = re.search(pattern, html, re.S)
-        if match:
-            return match.group(1)
-    return None
+    return match.group(1) if match else None
 
 
-def parse_schedule_rows(html: str) -> list[tuple[str, str, int, int]]:
+def parse_schedule_rows(html: str) -> list[ScheduleRow]:
     section = extract_schedule_section(html)
-    if not section:
+    if section is None:
         return []
 
-    rows: list[tuple[str, str, int, int]] = []
+    rows: list[ScheduleRow] = []
     for table_match in re.finditer(r"<table>(.*?)</table>", section, re.S):
         table_html = table_match.group(1)
         caption_match = re.search(r"<caption>\s*([0-9]{1,2})\.([0-9]{1,2})", table_html)
@@ -49,7 +60,11 @@ def parse_schedule_rows(html: str) -> list[tuple[str, str, int, int]]:
             continue
         month = int(caption_match.group(1))
         day = int(caption_match.group(2))
-        for row_match in re.finditer(r"<tr>\s*<th>(.*?)</th>\s*<td>(.*?)</td>\s*</tr>", table_html, re.S):
+        for row_match in re.finditer(
+            r"<tr>\s*<th>(.*?)</th>\s*<td>(.*?)</td>\s*</tr>",
+            table_html,
+            re.S,
+        ):
             time_cell = re.sub(r"<.*?>", "", row_match.group(1)).strip()
             label = re.sub(r"<.*?>", "", row_match.group(2)).strip()
             if time_cell:
@@ -57,30 +72,34 @@ def parse_schedule_rows(html: str) -> list[tuple[str, str, int, int]]:
     return rows
 
 
-def normalize_time_range(year: int, month: int, day: int, time_cell: str, label: str) -> tuple[datetime, datetime] | tuple[None, None]:
-    match = re.match(r"(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})", time_cell)
-    if match:
-        start_hour, start_minute, end_hour, end_minute = map(int, match.groups())
-        start = datetime(year, month, day, start_hour, start_minute, tzinfo=TOKYO)
+def normalize_time_range(
+    year: int,
+    month: int,
+    day: int,
+    time_cell: str,
+    label: str,
+) -> TimeRange | None:
+    start_match = re.match(r"(\d{1,2}):(\d{2})", time_cell)
+    if start_match is None:
+        return None
+
+    start_hour, start_minute = map(int, start_match.groups())
+    start = datetime(year, month, day, start_hour, start_minute, tzinfo=TOKYO)
+    remainder = time_cell[start_match.end() :]
+
+    if end_match := re.match(r"\s*-\s*(\d{1,2}):(\d{2})", remainder):
+        end_hour, end_minute = map(int, end_match.groups())
         end = datetime(year, month, day, end_hour, end_minute, tzinfo=TOKYO)
         if end <= start:
             end += timedelta(days=1)
         return start, end
 
-    match = re.match(r"(\d{1,2}):(\d{2})\s*-\s*\[.*?最大(\d{1,3})分.*\]", time_cell)
-    if match:
-        start_hour, start_minute, max_minutes = map(int, match.groups())
-        start = datetime(year, month, day, start_hour, start_minute, tzinfo=TOKYO)
-        return start, start + timedelta(minutes=max_minutes)
+    if duration_match := re.match(r"\s*-\s*\[.*?最大(\d{1,3})分.*\]", remainder):
+        duration = int(duration_match.group(1))
+    else:
+        duration = 75 if "決勝" in label else 30
 
-    match = re.match(r"(\d{1,2}):(\d{2})", time_cell)
-    if match:
-        start_hour, start_minute = map(int, match.groups())
-        start = datetime(year, month, day, start_hour, start_minute, tzinfo=TOKYO)
-        default_duration = 75 if "決勝" in label else 30
-        return start, start + timedelta(minutes=default_duration)
-
-    return None, None
+    return start, start + timedelta(minutes=duration)
 
 
 def ics_datetime(dt: datetime) -> str:
@@ -97,11 +116,11 @@ def build_uid(year: int, summary: str, start: datetime, source_url: str) -> str:
     return f"sf{year}-{digest}@superformula.net"
 
 
-def collect_events(year: int) -> list[dict[str, str | datetime]]:
+def collect_events(year: int) -> list[Event]:
     index_url = f"{BASE_URL}/race_taxonomy/{year}/"
     print(f"Fetching {index_url}...", file=sys.stderr)
     index_html = fetch(index_url)
-    events: list[dict[str, str | datetime]] = []
+    events: list[Event] = []
 
     for link in extract_race_links(index_html):
         print(f"Parsing {link}", file=sys.stderr)
@@ -111,9 +130,10 @@ def collect_events(year: int) -> list[dict[str, str | datetime]]:
         for time_cell, label, month, day in parse_schedule_rows(html):
             if not any(keyword in label for keyword in TITLE_FILTERS):
                 continue
-            start, end = normalize_time_range(year, month, day, time_cell, label)
-            if not start or not end:
+            time_range = normalize_time_range(year, month, day, time_cell, label)
+            if time_range is None:
                 continue
+            start, end = time_range
             summary = f"SUPER FORMULA {year} {label}"
             description = f"{page_title}\n{link}"
             events.append(
@@ -129,14 +149,12 @@ def collect_events(year: int) -> list[dict[str, str | datetime]]:
     return sorted(events, key=lambda event: (event["start"], event["summary"]))
 
 
-def collect_events_for_years(years: list[int]) -> list[dict[str, str | datetime]]:
-    events: list[dict[str, str | datetime]] = []
-    for year in years:
-        events.extend(collect_events(year))
+def collect_events_for_years(years: list[int]) -> list[Event]:
+    events = [event for year in years for event in collect_events(year)]
     return sorted(events, key=lambda event: (event["start"], event["summary"]))
 
 
-def build_ics(events: list[dict[str, str | datetime]], years: list[int]) -> str:
+def build_ics(events: list[Event]) -> str:
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
@@ -146,11 +164,11 @@ def build_ics(events: list[dict[str, str | datetime]], years: list[int]) -> str:
         lines.extend(
             [
                 "BEGIN:VEVENT",
-                f"SUMMARY:{escape_text(str(event['summary']))}",
+                f"SUMMARY:{escape_text(event['summary'])}",
                 f"DTSTART;TZID={TZID}:{ics_datetime(event['start'])}",
                 f"DTEND;TZID={TZID}:{ics_datetime(event['end'])}",
                 f"UID:{event['uid']}",
-                f"DESCRIPTION:{escape_text(str(event['description']))}",
+                f"DESCRIPTION:{escape_text(event['description'])}",
                 "END:VEVENT",
             ]
         )
@@ -176,7 +194,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     years = sorted(set(args.years))
-    sys.stdout.write(build_ics(collect_events_for_years(years), years))
+    sys.stdout.write(build_ics(collect_events_for_years(years)))
     return 0
 
 

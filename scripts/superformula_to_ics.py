@@ -4,7 +4,7 @@ import hashlib
 import re
 import sys
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import TypedDict
 
 
@@ -14,17 +14,33 @@ TZID = "Asia/Tokyo"
 TITLE_FILTERS = ("予選", "決勝", "Q1", "Q2")
 PRODID = "-//r4ai//superformula-to-ics//JP"
 SUPPORTED_YEARS = {2025, 2026}
+RACE_CARD_PATTERN = re.compile(
+    r'<li>\s*<a href="(?P<url>[^"]+)"[^>]*>.*?'
+    r'<p class="box_txt01">(?P<label>Rd\.[^<]+)</p>.*?'
+    r'<p class="inner01_txt01">\s*'
+    r"(?P<start_month>\d{1,2})月(?P<start_day>\d{1,2})日.*?~\s*"
+    r"(?:(?P<end_month>\d{1,2})月)?(?P<end_day>\d{1,2})日",
+    re.S,
+)
+RACE_URL_PATTERN = re.compile(r"https://superformula\.net/sf3/race/\d+/")
 
 
 type ScheduleRow = tuple[str, str, int, int]
 type TimeRange = tuple[datetime, datetime]
 
 
+class Race(TypedDict):
+    label: str
+    start: date
+    end: date
+    url: str | None
+
+
 class Event(TypedDict):
     summary: str
     description: str
-    start: datetime
-    end: datetime
+    start: date | datetime
+    end: date | datetime
     uid: str
 
 
@@ -35,6 +51,32 @@ def fetch(url: str) -> str:
 
 def extract_race_links(html: str) -> list[str]:
     return sorted(set(re.findall(r"https://superformula\.net/sf3/race/\d+/", html)))
+
+
+def extract_races(html: str, year: int) -> list[Race]:
+    races: list[Race] = []
+    for match in RACE_CARD_PATTERN.finditer(html):
+        start_month = int(match.group("start_month"))
+        start_day = int(match.group("start_day"))
+        end_day = int(match.group("end_day"))
+        end_month_text = match.group("end_month")
+        end_month = (
+            int(end_month_text)
+            if end_month_text
+            else start_month + (end_day < start_day)
+        )
+        end_year = year + (end_month < start_month or end_month > 12)
+        end_month = (end_month - 1) % 12 + 1
+        url = match.group("url")
+        races.append(
+            {
+                "label": match.group("label").strip(),
+                "start": date(year, start_month, start_day),
+                "end": date(end_year, end_month, end_day) + timedelta(days=1),
+                "url": url if RACE_URL_PATTERN.fullmatch(url) else None,
+            }
+        )
+    return races
 
 
 def extract_schedule_section(html: str) -> str | None:
@@ -107,51 +149,89 @@ def ics_datetime(dt: datetime) -> str:
 
 
 def escape_text(text: str) -> str:
-    return text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+    return (
+        text.replace("\\", "\\\\")
+        .replace(";", "\\;")
+        .replace(",", "\\,")
+        .replace("\n", "\\n")
+    )
 
 
-def build_uid(year: int, summary: str, start: datetime, source_url: str) -> str:
+def build_uid(year: int, summary: str, start: date | datetime, source_url: str) -> str:
     seed = f"{year}|{summary}|{start.isoformat()}|{source_url}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
     return f"sf{year}-{digest}@superformula.net"
+
+
+def collect_race_events(year: int, source_url: str) -> list[Event]:
+    events: list[Event] = []
+
+    print(f"Parsing {source_url}", file=sys.stderr)
+    html = fetch(source_url)
+    title_match = re.search(r"<title>(.*?)</title>", html, re.S)
+    page_title = (
+        re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else source_url
+    )
+    for time_cell, label, month, day in parse_schedule_rows(html):
+        if not any(keyword in label for keyword in TITLE_FILTERS):
+            continue
+        time_range = normalize_time_range(year, month, day, time_cell, label)
+        if time_range is None:
+            continue
+        start, end = time_range
+        summary = f"SUPER FORMULA {year} {label}"
+        description = f"{page_title}\n{source_url}"
+        events.append(
+            {
+                "summary": summary,
+                "description": description,
+                "start": start,
+                "end": end,
+                "uid": build_uid(year, summary, start, source_url),
+            }
+        )
+
+    return events
+
+
+def build_provisional_event(year: int, race: Race, index_url: str) -> Event:
+    source_url = race["url"] or index_url
+
+    summary = f"SUPER FORMULA {year} {race['label']}（開催期間・時刻未定）"
+    return {
+        "summary": summary,
+        "description": f"詳細日程公開後に自動更新されます。\n{source_url}",
+        "start": race["start"],
+        "end": race["end"],
+        "uid": build_uid(year, summary, race["start"], source_url),
+    }
+
+
+def event_sort_key(event: Event) -> tuple[str, str]:
+    return event["start"].isoformat(), event["summary"]
 
 
 def collect_events(year: int) -> list[Event]:
     index_url = f"{BASE_URL}/race_taxonomy/{year}/"
     print(f"Fetching {index_url}...", file=sys.stderr)
     index_html = fetch(index_url)
-    events: list[Event] = []
-
-    for link in extract_race_links(index_html):
-        print(f"Parsing {link}", file=sys.stderr)
-        html = fetch(link)
-        title_match = re.search(r"<title>(.*?)</title>", html, re.S)
-        page_title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else link
-        for time_cell, label, month, day in parse_schedule_rows(html):
-            if not any(keyword in label for keyword in TITLE_FILTERS):
-                continue
-            time_range = normalize_time_range(year, month, day, time_cell, label)
-            if time_range is None:
-                continue
-            start, end = time_range
-            summary = f"SUPER FORMULA {year} {label}"
-            description = f"{page_title}\n{link}"
-            events.append(
-                {
-                    "summary": summary,
-                    "description": description,
-                    "start": start,
-                    "end": end,
-                    "uid": build_uid(year, summary, start, link),
-                }
-            )
-
-    return sorted(events, key=lambda event: (event["start"], event["summary"]))
+    events = [
+        event
+        for source_url in extract_race_links(index_html)
+        for event in collect_race_events(year, source_url)
+    ]
+    descriptions = "\n".join(event["description"] for event in events)
+    events.extend(
+        build_provisional_event(year, race, index_url)
+        for race in extract_races(index_html, year)
+        if not re.search(rf"{re.escape(race['label'])}(?!\d)", descriptions)
+    )
+    return sorted(events, key=event_sort_key)
 
 
 def collect_events_for_years(years: list[int]) -> list[Event]:
     events = [event for year in years for event in collect_events(year)]
-    return sorted(events, key=lambda event: (event["start"], event["summary"]))
+    return sorted(events, key=event_sort_key)
 
 
 def build_ics(events: list[Event]) -> str:
@@ -161,12 +241,20 @@ def build_ics(events: list[Event]) -> str:
         f"PRODID:{PRODID}",
     ]
     for event in events:
+        if isinstance(event["start"], datetime):
+            assert isinstance(event["end"], datetime)
+            start_line = f"DTSTART;TZID={TZID}:{ics_datetime(event['start'])}"
+            end_line = f"DTEND;TZID={TZID}:{ics_datetime(event['end'])}"
+        else:
+            assert not isinstance(event["end"], datetime)
+            start_line = f"DTSTART;VALUE=DATE:{event['start']:%Y%m%d}"
+            end_line = f"DTEND;VALUE=DATE:{event['end']:%Y%m%d}"
         lines.extend(
             [
                 "BEGIN:VEVENT",
                 f"SUMMARY:{escape_text(event['summary'])}",
-                f"DTSTART;TZID={TZID}:{ics_datetime(event['start'])}",
-                f"DTEND;TZID={TZID}:{ics_datetime(event['end'])}",
+                start_line,
+                end_line,
                 f"UID:{event['uid']}",
                 f"DESCRIPTION:{escape_text(event['description'])}",
                 "END:VEVENT",
@@ -177,8 +265,15 @@ def build_ics(events: list[Event]) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate an ICS file from SUPER FORMULA race schedules.")
-    parser.add_argument("years", type=int, nargs="+", help="Season years to generate, for example 2025 2026")
+    parser = argparse.ArgumentParser(
+        description="Generate an ICS file from SUPER FORMULA race schedules."
+    )
+    parser.add_argument(
+        "years",
+        type=int,
+        nargs="+",
+        help="Season years to generate, for example 2025 2026",
+    )
     args = parser.parse_args()
 
     unsupported_years = sorted(set(args.years) - SUPPORTED_YEARS)

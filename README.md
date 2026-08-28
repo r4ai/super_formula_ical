@@ -15,6 +15,10 @@ https://raw.githubusercontent.com/r4ai/super_formula_ical/main/superformula.ics
 
 URL で登録するとスケジュールの更新が自動的に反映されます。
 
+予選・決勝の詳細時刻が未発表の大会は、公式レースカレンダーの開催期間を
+終日の暫定イベントとして登録します。詳細時刻の公開後は、時刻付きイベントへ
+自動的に置き換わります。
+
 ## Apple カレンダーに登録する（iPhone / Mac）
 
 1. Safari で以下の URL を開く

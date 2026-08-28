@@ -3,37 +3,68 @@ import importlib.util
 import io
 import sys
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from unittest import mock
 
 
-SCRIPT_PATH = (
-    Path(__file__).parents[1] / "scripts" / "superformula_to_ics.py"
-)
+SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "superformula_to_ics.py"
 SPEC = importlib.util.spec_from_file_location("superformula_to_ics", SCRIPT_PATH)
 assert SPEC and SPEC.loader
 superformula_to_ics = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(superformula_to_ics)
 
 
-class ScheduleParsingTests(unittest.TestCase):
-    def test_extracts_unique_sorted_race_links(self) -> None:
+class RaceParsingTests(unittest.TestCase):
+    def test_extracts_linked_and_unlinked_races_but_not_tests(self) -> None:
         html = """
-        https://superformula.net/sf3/race/2026/
-        https://example.com/sf3/race/ignored/
-        https://superformula.net/sf3/race/2025/
-        https://superformula.net/sf3/race/2026/
+        <li><a href="https://superformula.net/sf3/race/24431/">
+          <p class="box_txt01">Rd.9-10</p>
+          <p class="inner01_txt01">10月09日(金) ~ 11日(日)</p>
+        </a></li>
+        <li><a href="#" style="pointer-events: none;">
+          <p class="box_txt01">Rd.11-12</p>
+          <p class="inner01_txt01">11月20日(金) ~ 22日(日)</p>
+        </a></li>
+        <li><a href="https://superformula.net/sf3/race/24443/">
+          <p class="box_txt01">Test.2</p>
+          <p class="inner01_txt01">6月30日(火) ~ 01日(水)</p>
+        </a></li>
         """
 
         self.assertEqual(
-            superformula_to_ics.extract_race_links(html),
+            superformula_to_ics.extract_races(html, 2026),
             [
-                "https://superformula.net/sf3/race/2025/",
-                "https://superformula.net/sf3/race/2026/",
+                {
+                    "label": "Rd.9-10",
+                    "start": date(2026, 10, 9),
+                    "end": date(2026, 10, 12),
+                    "url": "https://superformula.net/sf3/race/24431/",
+                },
+                {
+                    "label": "Rd.11-12",
+                    "start": date(2026, 11, 20),
+                    "end": date(2026, 11, 23),
+                    "url": None,
+                },
             ],
         )
 
+    def test_normalizes_cross_month_race_period(self) -> None:
+        html = """
+        <li><a href="#">
+          <p class="box_txt01">Rd.1</p>
+          <p class="inner01_txt01">12月31日(木) ~ 01日(金)</p>
+        </a></li>
+        """
+
+        race = superformula_to_ics.extract_races(html, 2026)[0]
+
+        self.assertEqual(race["start"], date(2026, 12, 31))
+        self.assertEqual(race["end"], date(2027, 1, 2))
+
+
+class ScheduleParsingTests(unittest.TestCase):
     def test_extracts_rows_from_schedule_tables(self) -> None:
         html = """
         <span class="ank" id="schedule"></span>
@@ -61,7 +92,7 @@ class ScheduleParsingTests(unittest.TestCase):
         html = (
             '<span class="ank" id="schedule"></span>'
             "schedule"
-            r'<span class=\"ank\" id=\"entry\">'
+            r"<span class=\"ank\" id=\"entry\">"
         )
 
         self.assertEqual(
@@ -133,7 +164,12 @@ class NormalizeTimeRangeTests(unittest.TestCase):
 class CalendarGenerationTests(unittest.TestCase):
     def test_collects_only_calendar_events_in_chronological_order(self) -> None:
         race_url = "https://superformula.net/sf3/race/2026/"
-        index_html = f"{race_url}\n{race_url}"
+        index_html = f"""
+        <li><a href="{race_url}">
+          <p class="box_txt01">Rd.1</p>
+          <p class="inner01_txt01">4月5日(日) ~ 5日(日)</p>
+        </a></li>
+        """
         race_html = """
         <title>  SUPER FORMULA Rd.1\nRace  </title>
         <span class="ank" id="schedule"></span>
@@ -166,6 +202,65 @@ class CalendarGenerationTests(unittest.TestCase):
             events[0]["start"],
             datetime(2026, 4, 5, 10, 0, tzinfo=superformula_to_ics.TOKYO),
         )
+
+    def test_uses_provisional_event_until_linked_race_schedule_is_published(
+        self,
+    ) -> None:
+        race_url = "https://superformula.net/sf3/race/24431/"
+        index_html = f"""
+        <li><a href="{race_url}">
+          <p class="box_txt01">Rd.9-10</p>
+          <p class="inner01_txt01">10月09日(金) ~ 11日(日)</p>
+        </a></li>
+        """
+
+        with mock.patch.object(
+            superformula_to_ics,
+            "fetch",
+            side_effect=[index_html, "<title>2026 Rd.9-10 FUJI</title>"],
+        ):
+            events = superformula_to_ics.collect_events(2026)
+
+        self.assertEqual(
+            events,
+            [
+                {
+                    "summary": "SUPER FORMULA 2026 Rd.9-10（開催期間・時刻未定）",
+                    "description": f"詳細日程公開後に自動更新されます。\n{race_url}",
+                    "start": date(2026, 10, 9),
+                    "end": date(2026, 10, 12),
+                    "uid": superformula_to_ics.build_uid(
+                        2026,
+                        "SUPER FORMULA 2026 Rd.9-10（開催期間・時刻未定）",
+                        date(2026, 10, 9),
+                        race_url,
+                    ),
+                }
+            ],
+        )
+
+    def test_uses_index_as_source_when_race_detail_link_is_unavailable(self) -> None:
+        index_url = "https://superformula.net/sf3/race_taxonomy/2026/"
+        index_html = """
+        <li><a href="#" style="pointer-events: none;">
+          <p class="box_txt01">Rd.11-12</p>
+          <p class="inner01_txt01">11月20日(金) ~ 22日(日)</p>
+        </a></li>
+        """
+
+        with mock.patch.object(
+            superformula_to_ics,
+            "fetch",
+            return_value=index_html,
+        ) as fetch:
+            events = superformula_to_ics.collect_events(2026)
+
+        self.assertEqual(
+            events[0]["description"], f"詳細日程公開後に自動更新されます。\n{index_url}"
+        )
+        self.assertEqual(events[0]["start"], date(2026, 11, 20))
+        self.assertEqual(events[0]["end"], date(2026, 11, 23))
+        fetch.assert_called_once_with(index_url)
 
     def test_main_normalizes_years_and_writes_escaped_ics(self) -> None:
         event = {
@@ -213,6 +308,21 @@ class CalendarGenerationTests(unittest.TestCase):
                 ]
             ),
         )
+
+    def test_builds_all_day_ics_for_provisional_event(self) -> None:
+        event = {
+            "summary": "SUPER FORMULA 2026 Rd.9-10（開催期間・時刻未定）",
+            "description": "詳細日程公開後に自動更新されます。",
+            "start": date(2026, 10, 9),
+            "end": date(2026, 10, 12),
+            "uid": "provisional@example.com",
+        }
+
+        ics = superformula_to_ics.build_ics([event])
+
+        self.assertIn("DTSTART;VALUE=DATE:20261009\n", ics)
+        self.assertIn("DTEND;VALUE=DATE:20261012\n", ics)
+        self.assertNotIn("DTSTART;TZID=", ics)
 
 
 class ParseArgsTests(unittest.TestCase):

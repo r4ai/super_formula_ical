@@ -7,6 +7,7 @@ import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from typing import TypedDict
 
+from selectolax.lexbor import LexborHTMLParser, LexborNode
 
 BASE_URL = "https://superformula.net/sf3"
 TOKYO = timezone(timedelta(hours=9))
@@ -14,14 +15,12 @@ TZID = "Asia/Tokyo"
 TITLE_FILTERS = ("予選", "決勝", "Q1", "Q2")
 PRODID = "-//r4ai//superformula-to-ics//JP"
 SUPPORTED_YEARS = {2025, 2026}
-RACE_CARD_PATTERN = re.compile(
-    r'<li>\s*<a href="(?P<url>[^"]+)"[^>]*>.*?'
-    r'<p class="box_txt01">(?P<label>Rd\.[^<]+)</p>.*?'
-    r'<p class="inner01_txt01">\s*'
-    r"(?P<start_month>\d{1,2})月(?P<start_day>\d{1,2})日.*?~\s*"
-    r"(?:(?P<end_month>\d{1,2})月)?(?P<end_day>\d{1,2})日",
-    re.S,
+RACE_PERIOD_PATTERN = re.compile(
+    r"(?P<start_month>\d{1,2})月\s*(?P<start_day>\d{1,2})日"
+    r".*?[~～]\s*(?:(?P<end_month>\d{1,2})月\s*)?"
+    r"(?P<end_day>\d{1,2})日"
 )
+CAPTION_DATE_PATTERN = re.compile(r"(?P<month>\d{1,2})\s*\.\s*(?P<day>\d{1,2})")
 RACE_URL_PATTERN = re.compile(r"https://superformula\.net/sf3/race/\d+/")
 
 
@@ -49,69 +48,122 @@ def fetch(url: str) -> str:
         return response.read().decode("utf-8")
 
 
-def extract_race_links(html: str) -> list[str]:
-    return sorted(set(re.findall(r"https://superformula\.net/sf3/race/\d+/", html)))
+def parse_html(html: str) -> LexborHTMLParser:
+    return LexborHTMLParser(html)
 
 
-def extract_races(html: str, year: int) -> list[Race]:
-    races: list[Race] = []
-    for match in RACE_CARD_PATTERN.finditer(html):
-        start_month = int(match.group("start_month"))
-        start_day = int(match.group("start_day"))
-        end_day = int(match.group("end_day"))
-        end_month_text = match.group("end_month")
-        end_month = (
-            int(end_month_text)
-            if end_month_text
-            else start_month + (end_day < start_day)
-        )
-        end_year = year + (end_month < start_month or end_month > 12)
-        end_month = (end_month - 1) % 12 + 1
-        url = match.group("url")
-        races.append(
-            {
-                "label": match.group("label").strip(),
-                "start": date(year, start_month, start_day),
-                "end": date(end_year, end_month, end_day) + timedelta(days=1),
-                "url": url if RACE_URL_PATTERN.fullmatch(url) else None,
-            }
-        )
-    return races
+def node_text(node: LexborNode) -> str:
+    return " ".join(node.text().split())
 
 
-def extract_schedule_section(html: str) -> str | None:
-    match = re.search(
-        r'<span class="ank" id="schedule"></span>'
-        r'(.*?)<span class=\\?"ank\\?" id=\\?"',
-        html,
-        re.S,
+def race_dates(period: re.Match[str], year: int) -> tuple[date, date]:
+    start_month = int(period.group("start_month"))
+    start_day = int(period.group("start_day"))
+    end_day = int(period.group("end_day"))
+    end_month_text = period.group("end_month")
+    end_month = (
+        int(end_month_text) if end_month_text else start_month + (end_day < start_day)
     )
-    return match.group(1) if match else None
+    end_year = year + (end_month < start_month or end_month > 12)
+    end_month = (end_month - 1) % 12 + 1
+    return date(year, start_month, start_day), date(
+        end_year, end_month, end_day
+    ) + timedelta(days=1)
 
 
-def parse_schedule_rows(html: str) -> list[ScheduleRow]:
-    section = extract_schedule_section(html)
-    if section is None:
+def race_card_nodes(
+    card: LexborNode,
+) -> tuple[LexborNode, LexborNode, LexborNode] | None:
+    link = card.css_first("a[href]")
+    label = card.css_first(".box_txt01")
+    period = card.css_first(".inner01_txt01")
+    if link is None or label is None or period is None:
+        return None
+    return link, label, period
+
+
+def parse_race_card(card: LexborNode, year: int) -> Race | None:
+    nodes = race_card_nodes(card)
+    if nodes is None:
+        return None
+
+    link, label_node, period_node = nodes
+    label = node_text(label_node)
+    period = RACE_PERIOD_PATTERN.search(node_text(period_node))
+    if not label.startswith("Rd.") or period is None:
+        return None
+
+    start, end = race_dates(period, year)
+    href = link.attributes.get("href") or ""
+    return {
+        "label": label,
+        "start": start,
+        "end": end,
+        "url": href if RACE_URL_PATTERN.fullmatch(href) else None,
+    }
+
+
+def extract_races(document: LexborHTMLParser, year: int) -> list[Race]:
+    return [
+        race
+        for card in document.css("li")
+        if (race := parse_race_card(card, year)) is not None
+    ]
+
+
+def is_section_anchor(node: LexborNode) -> bool:
+    return node.tag == "span" and "ank" in (node.attributes.get("class") or "").split()
+
+
+def descendant_tables(node: LexborNode) -> list[LexborNode]:
+    return [node] if node.tag == "table" else node.css("table")
+
+
+def schedule_tables(document: LexborHTMLParser) -> list[LexborNode]:
+    schedule_anchor = document.css_first("#schedule")
+    if schedule_anchor is None:
         return []
 
-    rows: list[ScheduleRow] = []
-    for table_match in re.finditer(r"<table>(.*?)</table>", section, re.S):
-        table_html = table_match.group(1)
-        caption_match = re.search(r"<caption>\s*([0-9]{1,2})\.([0-9]{1,2})", table_html)
-        if not caption_match:
-            continue
-        month = int(caption_match.group(1))
-        day = int(caption_match.group(2))
-        for row_match in re.finditer(
-            r"<tr>\s*<th>(.*?)</th>\s*<td>(.*?)</td>\s*</tr>",
-            table_html,
-            re.S,
-        ):
-            time_cell = re.sub(r"<.*?>", "", row_match.group(1)).strip()
-            label = re.sub(r"<.*?>", "", row_match.group(2)).strip()
-            if time_cell:
-                rows.append((time_cell, label, month, day))
-    return rows
+    tables: list[LexborNode] = []
+    sibling = schedule_anchor.next
+    while sibling is not None and not is_section_anchor(sibling):
+        tables.extend(descendant_tables(sibling))
+        sibling = sibling.next
+    return tables
+
+
+def parse_schedule_row(row: LexborNode, month: int, day: int) -> ScheduleRow | None:
+    time_node = row.css_first("th")
+    label_node = row.css_first("td")
+    if time_node is None or label_node is None:
+        return None
+    time_cell = node_text(time_node)
+    return (time_cell, node_text(label_node), month, day) if time_cell else None
+
+
+def parse_schedule_table(table: LexborNode) -> list[ScheduleRow]:
+    caption = table.css_first("caption")
+    caption_date = (
+        CAPTION_DATE_PATTERN.search(node_text(caption)) if caption is not None else None
+    )
+    if caption_date is None:
+        return []
+
+    month = int(caption_date.group("month"))
+    day = int(caption_date.group("day"))
+    return [
+        schedule_row
+        for row in table.css("tr")
+        if (schedule_row := parse_schedule_row(row, month, day)) is not None
+    ]
+
+
+def parse_schedule_rows(document: LexborHTMLParser) -> list[ScheduleRow]:
+    return [
+        row
+        for table in schedule_tables(document)
+        for row in parse_schedule_table(table)
+    ]
 
 
 def normalize_time_range(
@@ -167,12 +219,10 @@ def collect_race_events(year: int, source_url: str) -> list[Event]:
     events: list[Event] = []
 
     print(f"Parsing {source_url}", file=sys.stderr)
-    html = fetch(source_url)
-    title_match = re.search(r"<title>(.*?)</title>", html, re.S)
-    page_title = (
-        re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else source_url
-    )
-    for time_cell, label, month, day in parse_schedule_rows(html):
+    document = parse_html(fetch(source_url))
+    title = document.css_first("title")
+    page_title = node_text(title) if title is not None else source_url
+    for time_cell, label, month, day in parse_schedule_rows(document):
         if not any(keyword in label for keyword in TITLE_FILTERS):
             continue
         time_range = normalize_time_range(year, month, day, time_cell, label)
@@ -214,18 +264,13 @@ def event_sort_key(event: Event) -> tuple[str, str]:
 def collect_events(year: int) -> list[Event]:
     index_url = f"{BASE_URL}/race_taxonomy/{year}/"
     print(f"Fetching {index_url}...", file=sys.stderr)
-    index_html = fetch(index_url)
-    events = [
-        event
-        for source_url in extract_race_links(index_html)
-        for event in collect_race_events(year, source_url)
-    ]
-    descriptions = "\n".join(event["description"] for event in events)
-    events.extend(
-        build_provisional_event(year, race, index_url)
-        for race in extract_races(index_html, year)
-        if not re.search(rf"{re.escape(race['label'])}(?!\d)", descriptions)
-    )
+    races = extract_races(parse_html(fetch(index_url)), year)
+    events: list[Event] = []
+    for race in races:
+        race_events = (
+            collect_race_events(year, race["url"]) if race["url"] is not None else []
+        )
+        events.extend(race_events or [build_provisional_event(year, race, index_url)])
     return sorted(events, key=event_sort_key)
 
 

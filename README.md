@@ -48,6 +48,9 @@ ICS ファイルの生成:
 uv run python scripts/superformula_to_ics.py 2025 2026 > superformula.ics
 ```
 
+公式ページの HTML は Lexbor HTML5 パーサで構文木に変換し、レースカードと
+スケジュール表を DOM 構造から抽出します。
+
 テスト:
 
 ```bash

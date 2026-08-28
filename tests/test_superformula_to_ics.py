@@ -7,7 +7,6 @@ from datetime import date, datetime
 from pathlib import Path
 from unittest import mock
 
-
 SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "superformula_to_ics.py"
 SPEC = importlib.util.spec_from_file_location("superformula_to_ics", SCRIPT_PATH)
 assert SPEC and SPEC.loader
@@ -33,7 +32,10 @@ class RaceParsingTests(unittest.TestCase):
         """
 
         self.assertEqual(
-            superformula_to_ics.extract_races(html, 2026),
+            superformula_to_ics.extract_races(
+                superformula_to_ics.parse_html(html),
+                2026,
+            ),
             [
                 {
                     "label": "Rd.9-10",
@@ -58,10 +60,40 @@ class RaceParsingTests(unittest.TestCase):
         </a></li>
         """
 
-        race = superformula_to_ics.extract_races(html, 2026)[0]
+        race = superformula_to_ics.extract_races(
+            superformula_to_ics.parse_html(html),
+            2026,
+        )[0]
 
         self.assertEqual(race["start"], date(2026, 12, 31))
         self.assertEqual(race["end"], date(2027, 1, 2))
+
+    def test_recovers_race_from_varied_markup_with_omitted_closing_tags(
+        self,
+    ) -> None:
+        html = """
+        <li data-kind="race">
+          <a class="race-card" data-id="24431"
+             href="https://superformula.net/sf3/race/24431/">
+            <p class="featured box_txt01"><span>Rd.9&amp;10</span>
+            <p data-label="period" class="compact inner01_txt01">
+              <span>10月09日(金)</span> ～ <strong>10月11日(日)</strong>
+        """
+
+        self.assertEqual(
+            superformula_to_ics.extract_races(
+                superformula_to_ics.parse_html(html),
+                2026,
+            ),
+            [
+                {
+                    "label": "Rd.9&10",
+                    "start": date(2026, 10, 9),
+                    "end": date(2026, 10, 12),
+                    "url": "https://superformula.net/sf3/race/24431/",
+                }
+            ],
+        )
 
 
 class ScheduleParsingTests(unittest.TestCase):
@@ -81,23 +113,44 @@ class ScheduleParsingTests(unittest.TestCase):
         """
 
         self.assertEqual(
-            superformula_to_ics.parse_schedule_rows(html),
+            superformula_to_ics.parse_schedule_rows(
+                superformula_to_ics.parse_html(html)
+            ),
             [("10:00 - 10:30", "Q1", 4, 5)],
         )
 
     def test_returns_no_rows_without_schedule_section(self) -> None:
-        self.assertEqual(superformula_to_ics.parse_schedule_rows("<html></html>"), [])
-
-    def test_extracts_section_before_escaped_anchor(self) -> None:
-        html = (
-            '<span class="ank" id="schedule"></span>'
-            "schedule"
-            r"<span class=\"ank\" id=\"entry\">"
+        self.assertEqual(
+            superformula_to_ics.parse_schedule_rows(
+                superformula_to_ics.parse_html("<html></html>")
+            ),
+            [],
         )
 
+    def test_uses_dom_structure_and_stops_at_the_next_section(self) -> None:
+        html = """
+        <span id="schedule" class="target ank"></span>
+        <section>
+          <table class="schedule">
+            <caption><span>4</span>.<strong>5</strong> SUN</caption>
+            <thead><tr><th>Time</th><th>Session</th></tr></thead>
+            <tbody>
+              <tr data-session="qualifying">
+                <th class="time"><strong>10:00</strong> - 10:30</th>
+                <td class="name"><span>Q1</span> &amp; Q2</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+        <span id="entry" class="ank"></span>
+        <table><caption>4.6</caption><tr><th>11:00</th><td>決勝</td></tr></table>
+        """
+
         self.assertEqual(
-            superformula_to_ics.extract_schedule_section(html),
-            "schedule",
+            superformula_to_ics.parse_schedule_rows(
+                superformula_to_ics.parse_html(html)
+            ),
+            [("10:00 - 10:30", "Q1 & Q2", 4, 5)],
         )
 
 
@@ -171,7 +224,7 @@ class CalendarGenerationTests(unittest.TestCase):
         </a></li>
         """
         race_html = """
-        <title>  SUPER FORMULA Rd.1\nRace  </title>
+        <title>  SUPER FORMULA Rd.1 &amp;\nRace  </title>
         <span class="ank" id="schedule"></span>
         <table>
           <caption>4.5 SUN</caption>
@@ -196,7 +249,7 @@ class CalendarGenerationTests(unittest.TestCase):
         self.assertEqual(events[0]["summary"], "SUPER FORMULA 2026 Q1")
         self.assertEqual(
             events[0]["description"],
-            f"SUPER FORMULA Rd.1 Race\n{race_url}",
+            f"SUPER FORMULA Rd.1 & Race\n{race_url}",
         )
         self.assertEqual(
             events[0]["start"],
@@ -344,9 +397,9 @@ class ParseArgsTests(unittest.TestCase):
                 ["superformula_to_ics.py", "2027"],
             ),
             mock.patch("sys.stderr", new_callable=io.StringIO),
+            self.assertRaisesRegex(SystemExit, "2"),
         ):
-            with self.assertRaisesRegex(SystemExit, "2"):
-                superformula_to_ics.parse_args()
+            superformula_to_ics.parse_args()
 
 
 if __name__ == "__main__":

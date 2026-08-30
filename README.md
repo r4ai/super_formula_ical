@@ -51,6 +51,16 @@ uv run python scripts/superformula_to_ics.py 2025 2026 > superformula.ics
 公式ページの HTML は Lexbor HTML5 パーサで構文木に変換し、レースカードと
 スケジュール表を DOM 構造から抽出します。
 
+生成処理は `scripts/sf_calendar/` で責務ごとに分割しています。
+
+- `website.py`: HTTP と公式サイト固有の DOM 構造をドメインモデルへ変換
+- `generator.py`: サイト実装に依存しないイベント生成と時刻の正規化
+- `ics.py`: イベントを RFC 5545 形式へ直列化
+- `models.py`: 境界間で受け渡す不変なデータモデル
+
+公式サイトのマークアップ変更は `website.py` と対応するパーサテストに閉じ込め、
+イベント生成や ICS 出力へ波及させない構成です。
+
 テスト:
 
 ```bash

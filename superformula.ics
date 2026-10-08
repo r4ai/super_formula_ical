@@ -635,7 +635,7 @@ BEGIN:VEVENT
 SUMMARY:SUPER FORMULA 2026 Rd.11-12（開催期間・時刻未定）
 DTSTART;VALUE=DATE:20261120
 DTEND;VALUE=DATE:20261123
-UID:sf2026-84a40e294946575f2e643d5e@superformula.net
-DESCRIPTION:詳細日程公開後に自動更新されます。\nhttps://superformula.net/sf3/race_taxonomy/2026/
+UID:sf2026-f4b5a86aadf14cf1cb2427fa@superformula.net
+DESCRIPTION:詳細日程公開後に自動更新されます。\nhttps://superformula.net/sf3/race/24434/
 END:VEVENT
 END:VCALENDAR

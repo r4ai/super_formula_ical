@@ -53,6 +53,16 @@ class NormalizeTimeRangeTests(unittest.TestCase):
                     normalize_time_range(2026, row), (expected_start, expected_end)
                 )
 
+    def test_uses_explicit_end_after_duplicated_start_minute(self) -> None:
+        row = ScheduleRow("09:50 50-10:00(暫定)", "Rd.11 予選Q1 GrA", 11, 21)
+        self.assertEqual(
+            normalize_time_range(2026, row),
+            (
+                datetime(2026, 11, 21, 9, 50, tzinfo=TOKYO),
+                datetime(2026, 11, 21, 10, 0, tzinfo=TOKYO),
+            ),
+        )
+
     def test_rejects_time_cell_without_a_start_time(self) -> None:
         self.assertIsNone(normalize_time_range(2026, ScheduleRow("TBA", "決勝", 4, 5)))
 

@@ -45,6 +45,10 @@ def normalize_time_range(year: int, row: ScheduleRow) -> TimeRange | None:
     start = datetime(year, row.month, row.day, start_hour, start_minute, tzinfo=TOKYO)
     remainder = row.time[start_match.end() :]
 
+    # Some schedule cells repeat the start minute before the explicit end.
+    remainder = re.sub(
+        rf"^\s+{start_match[2]}(?=\s*-\s*\d{{1,2}}:\d{{2}})", "", remainder
+    )
     end = parse_explicit_end(start, remainder)
     if end is not None:
         return start, end
